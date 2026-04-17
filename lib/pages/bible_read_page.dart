@@ -1,7 +1,6 @@
 // lib/pages/bible_read_page.dart
 
 import 'dart:convert';
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -17,6 +16,10 @@ import 'dictionary_page.dart';
 import 'search_page.dart';
 import '../l10n/app_strings.dart';
 import 'book_select_page.dart';
+import 'sheets/commentary_sheet.dart';
+import 'sheets/cross_reference_sheet.dart';
+import '../services/cross_reference_service.dart';
+import '../services/experience_service.dart';
 
 class BibleReadPage extends StatefulWidget {
   final String version;
@@ -51,20 +54,29 @@ class _BibleReadPageState extends State<BibleReadPage>
   List<String> verses   = [];
   bool         isLoading = true;
 
-  // ── 폰트 & Pinch ───────────────────────────────────────────
-  double _fontSize   = 20.0;
-  double _baseScale  = 20.0;
-  bool   _isPinching = false;
+  // ── 장 캐시 (이전/다음 장 프리로드용) ────────────────────
+  final Map<int, List<String>> _chapterCache = {};
+
+  // ── 폰트 ───────────────────────────────────────────────────
+  double _fontSize = 20.0;
+
+  // ── 절 탭 on/off ──────────────────────────────────────────
+  bool _verseTapEnabled = true;
 
   // ── 북마크/형광펜/메모 ────────────────────────────────────
   Map<int, Bookmark>  _bookmarksByVerse  = {};
   Map<int, Highlight> _highlightsByVerse = {};
   Set<int>            _memoVerseNumbers  = {};
 
-  // ── 절 선택 ────────────────────────────────────────────────
-  int? _selectedVerse;
+  // ── 절 선택 (다중 토글) ───────────────────────────────────
+  // 각 절 탭 = 그 절만 토글. 이미 선택이면 해제, 아니면 추가.
+  // 연속/비연속 상관없이 자유 누적 선택.
+  // 빈 곳 탭 또는 '전체 해제' 버튼 = 모두 해제.
+  Set<int> _selectedVerses = {};
   late AnimationController _barController;
   late Animation<Offset>   _barSlide;
+
+  bool get _hasSelection => _selectedVerses.isNotEmpty;
 
   // ── 스크롤 & 절 추적 ────────────────────────────────────────
   final ScrollController    _scrollController = ScrollController();
@@ -115,15 +127,17 @@ class _BibleReadPageState extends State<BibleReadPage>
   Future<void> _loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _fontSize     = prefs.getDouble('font_size')     ?? 20.0;
-      _classicMode  = prefs.getBool('classic_mode')    ?? false;
+      _fontSize        = prefs.getDouble('font_size')        ?? 20.0;
+      _classicMode     = prefs.getBool('classic_mode')       ?? false;
+      _verseTapEnabled = prefs.getBool('verse_tap_enabled')  ?? true;
     });
   }
 
   Future<void> _savePrefs() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setDouble('font_size',   _fontSize);
-    await prefs.setBool('classic_mode', _classicMode);
+    await prefs.setDouble('font_size',         _fontSize);
+    await prefs.setBool  ('classic_mode',      _classicMode);
+    await prefs.setBool  ('verse_tap_enabled', _verseTapEnabled);
   }
 
   Future<void> _saveLastRead() async {
@@ -132,6 +146,14 @@ class _BibleReadPageState extends State<BibleReadPage>
     await prefs.setString('last_book_key',  widget.bookKey);
     await prefs.setString('last_book_name', widget.bookName);
     await prefs.setInt   ('last_chapter',   _currentChapter);
+    // 연구소 탭이 사용하는 last_read_* 키도 함께 갱신
+    await prefs.setString('last_read_book',    widget.bookKey);
+    await prefs.setInt   ('last_read_chapter', _currentChapter);
+  }
+
+  Future<void> _saveLastVerse(int v) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('last_read_verse', v);
   }
 
   // ── 데이터 로드 ────────────────────────────────────────────
@@ -143,16 +165,60 @@ class _BibleReadPageState extends State<BibleReadPage>
     });
   }
 
+  Future<List<String>> _fetchChapter(int chapter) async {
+    final cached = _chapterCache[chapter];
+    if (cached != null) return cached;
+    final path = 'assets/bible/${widget.version}/${widget.bookKey}/$chapter.json';
+    final raw  = await rootBundle.loadString(path);
+    final data = json.decode(raw) as List<dynamic>;
+    final list = data.map((e) => e.toString()).toList();
+    _chapterCache[chapter] = list;
+    // 현재 장에서 ±2 범위 밖은 메모리 정리
+    _chapterCache.removeWhere((k, _) => (k - _currentChapter).abs() > 2);
+    return list;
+  }
+
+  void _preloadNeighbors(int chapter) {
+    for (final n in [chapter - 1, chapter + 1]) {
+      if (n < 1 || n > widget.totalChapters) continue;
+      if (_chapterCache.containsKey(n)) continue;
+      // 실패는 조용히 무시 (선제 로드일 뿐)
+      _fetchChapter(n).catchError((_) => <String>[]);
+    }
+  }
+
   Future<void> _loadBibleText(int chapter) async {
+    // 캐시 히트 → 즉시 표시, 스피너 없음
+    final cached = _chapterCache[chapter];
+    if (cached != null) {
+      setState(() {
+        verses = cached;
+        isLoading = false;
+        _verseKeys.clear();
+        _highlightExpired = false;
+      });
+      // 첫 방문 장만 +10 EXP (중복 방지는 서비스가 처리)
+      ExperienceService.markChapterRead(widget.bookKey, chapter);
+      if (widget.highlightVerse != null && chapter == widget.chapter) {
+        _scrollToVerse(widget.highlightVerse!);
+        Future.delayed(const Duration(milliseconds: 1500), () {
+          if (mounted) setState(() => _highlightExpired = true);
+        });
+      }
+      _preloadNeighbors(chapter);
+      return;
+    }
+
     setState(() { isLoading = true; _verseKeys.clear(); _highlightExpired = false; });
     try {
-      final path = 'assets/bible/${widget.version}/${widget.bookKey}/$chapter.json';
-      final raw  = await rootBundle.loadString(path);
-      final data = json.decode(raw) as List<dynamic>;
+      final list = await _fetchChapter(chapter);
+      if (!mounted) return;
       setState(() {
-        verses    = data.map((e) => e.toString()).toList();
+        verses    = list;
         isLoading = false;
       });
+      // 첫 방문 장만 +10 EXP — ExperienceService가 중복 방지
+      ExperienceService.markChapterRead(widget.bookKey, chapter);
       if (widget.highlightVerse != null && chapter == widget.chapter) {
         _scrollToVerse(widget.highlightVerse!);
         // 1.5초 후 하이라이트 자동 소멸
@@ -160,7 +226,9 @@ class _BibleReadPageState extends State<BibleReadPage>
           if (mounted) setState(() => _highlightExpired = true);
         });
       }
+      _preloadNeighbors(chapter);
     } catch (e) {
+      if (!mounted) return;
       setState(() { verses = ['해당 장을 불러올 수 없어요.']; isLoading = false; });
     }
   }
@@ -185,46 +253,74 @@ class _BibleReadPageState extends State<BibleReadPage>
   // ── 페이지 전환 ────────────────────────────────────────────
   void _onPageChanged(int pageIndex) {
     final newChapter = pageIndex + 1;
-    setState(() { _currentChapter = newChapter; _selectedVerse = null; });
+    final cached = _chapterCache[newChapter];
+    setState(() {
+      _currentChapter = newChapter;
+      _selectedVerses = {};
+      _verseKeys.clear();
+      // 캐시 히트면 즉시 새 장 텍스트로, 아니면 잠시 빈 채로
+      verses = cached ?? [];
+      isLoading = cached == null;
+    });
     _barController.reverse();
     _loadBibleText(newChapter);
     _loadChapterData(newChapter);
     _saveLastRead();
   }
 
-  // ── 절 선택 ────────────────────────────────────────────────
+  // ── 절 선택 (토글) ─────────────────────────────────────────
   void _selectVerse(int verseNum) {
-    if (_selectedVerse == verseNum) { _clearSelection(); return; }
-    setState(() => _selectedVerse = verseNum);
-    _barController.forward();
-    HapticFeedback.selectionClick();
-    _scrollToVerse(verseNum);
+    if (!_verseTapEnabled || verses.isEmpty) return;
+    final idx = verseNum - 1;
+    if (idx < 0 || idx >= verses.length) return;
+
+    setState(() {
+      if (_selectedVerses.contains(verseNum)) {
+        // 이미 선택 → 그 절만 해제 (다른 선택은 유지)
+        _selectedVerses = {..._selectedVerses}..remove(verseNum);
+      } else {
+        // 새 절 → 선택 추가 (누적)
+        _selectedVerses = {..._selectedVerses, verseNum};
+      }
+    });
+
+    if (_hasSelection) {
+      _barController.forward();
+      HapticFeedback.selectionClick();
+      _scrollToVerse(verseNum);
+      _saveLastVerse(verseNum);
+    } else {
+      _barController.reverse();
+    }
   }
 
   void _clearSelection() {
-    setState(() => _selectedVerse = null);
+    if (_selectedVerses.isEmpty) return;
+    setState(() => _selectedVerses = {});
     _barController.reverse();
   }
 
-
-  // ── Pinch Zoom ─────────────────────────────────────────────
-  void _onScaleStart(ScaleStartDetails details) {
-    if (details.pointerCount < 2) return;
-    _baseScale = _fontSize;
-    setState(() => _isPinching = true);
-  }
-
-  void _onScaleUpdate(ScaleUpdateDetails details) {
-    if (details.pointerCount < 2) return;
-    setState(() {
-      _fontSize = (_baseScale * details.scale).clamp(12.0, 32.0);
+  void _toggleVerseTap() {
+    // verses가 아직 준비 안됐으면 선택 상태 접근이 위험 → 선택은 무조건 비우고,
+    // 실제 rebuild는 다음 프레임으로 미뤄 PageView의 진행 중 빌드와 충돌 방지
+    HapticFeedback.selectionClick();
+    final nextEnabled = !_verseTapEnabled;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {
+        _verseTapEnabled = nextEnabled;
+        _selectedVerses = {};
+      });
+      _barController.reverse();
+      _savePrefs();
+      _snack(nextEnabled ? '절 탭이 켜졌어요' : '절 탭이 꺼졌어요');
     });
   }
 
-  void _onScaleEnd(ScaleEndDetails details) {
-    setState(() => _isPinching = false);
-    _savePrefs();
-  }
+  // 스테일 verseNum이 섞이지 않도록 현재 verses.length 기준으로 걸러줌.
+  // 장 전환 레이스에서 이전 장의 인덱스가 살아남는 상황 방어.
+  Set<int> _prunedSelection() =>
+      _selectedVerses.where((n) => n >= 1 && n <= verses.length).toSet();
 
   // ── 폰트 버튼 조절 ─────────────────────────────────────────
   void _changeFontSize(double delta) {
@@ -246,40 +342,138 @@ class _BibleReadPageState extends State<BibleReadPage>
     }
   }
 
-  // ── 형광펜 ─────────────────────────────────────────────────
+  // ── 선택된 절들을 VerseRef 리스트로 (범위 체크 포함) ────────
+  List<VerseRef> _selectedRefs() {
+    final sorted = _prunedSelection().toList()..sort();
+    return sorted.map(_makeVerseRef).toList();
+  }
+
+  // 선택된 절들의 공통 하이라이트 키. 전부 동일하면 그 키, 아니면 null.
+  String? _computeSharedHighlight(Set<int> selection) {
+    if (selection.isEmpty) return null;
+    final keys =
+        selection.map((n) => _highlightsByVerse[n]?.colorKey).toSet();
+    return keys.length == 1 ? keys.first : null;
+  }
+
+  // ── 형광펜 (다중) ──────────────────────────────────────────
   Future<void> _applyHighlight(String colorKey) async {
-    if (_selectedVerse == null) return;
-    final result = await HighlightService.save(_makeVerseRef(_selectedVerse!), colorKey);
+    final refs = _selectedRefs();
+    if (refs.isEmpty) return;
+    // 모두 같은 색이면 토글로 지워지고, 아니면 일괄 적용됨
+    final pruned = _prunedSelection();
+    final colors =
+        pruned.map((n) => _highlightsByVerse[n]?.colorKey).toSet();
+    final allSame = colors.length == 1 && colors.first == colorKey;
+    for (final ref in refs) {
+      await HighlightService.save(ref, colorKey);
+    }
     _loadChapterData(_currentChapter);
-    _snack(result.id.isEmpty
+    _snack(allSame
         ? '형광펜을 지웠어요'
-        : '${HighlightColor.fromKey(colorKey).label} 형광펜으로 표시했어요');
+        : '${refs.length}절에 ${HighlightColor.fromKey(colorKey).label} 형광펜');
   }
 
-  // ── 북마크 ─────────────────────────────────────────────────
+  // ── 북마크 (다중) ──────────────────────────────────────────
   Future<void> _toggleBookmark() async {
-    if (_selectedVerse == null) return;
-    final added = await BookmarkService.toggle(_makeVerseRef(_selectedVerse!));
+    final refs = _selectedRefs();
+    if (refs.isEmpty) return;
+    final allMarked =
+        refs.every((r) => _bookmarksByVerse.containsKey(r.verse));
+    if (allMarked) {
+      for (final ref in refs) {
+        await BookmarkService.toggle(ref);
+      }
+      _snack('${refs.length}절 북마크 해제');
+    } else {
+      for (final ref in refs) {
+        if (!_bookmarksByVerse.containsKey(ref.verse)) {
+          await BookmarkService.toggle(ref);
+        }
+      }
+      _snack('${refs.length}절 북마크 저장 ★');
+    }
     _loadChapterData(_currentChapter);
-    _snack(added ? '북마크에 저장됐어요 ★' : '북마크가 삭제되었어요');
   }
 
-  // ── 복사 ───────────────────────────────────────────────────
+  // ── 복사 (다중) ────────────────────────────────────────────
   void _copyVerse() {
-    if (_selectedVerse == null) return;
-    Clipboard.setData(ClipboardData(text: '$_selectedVerse ${verses[_selectedVerse! - 1]}'));
-    _snack('복사됐어요');
+    final pruned = _prunedSelection();
+    if (pruned.isEmpty) return;
+    final sorted = pruned.toList()..sort();
+    final lines = <String>[];
+    for (final n in sorted) {
+      final idx = n - 1;
+      if (idx < 0 || idx >= verses.length) continue;
+      lines.add('$n ${verses[idx]}');
+    }
+    if (lines.isEmpty) return;
+    Clipboard.setData(ClipboardData(text: lines.join('\n')));
+    _snack('${lines.length}절 복사됐어요');
   }
 
-  // ── 메모 ───────────────────────────────────────────────────
+  // ── 주석 시트 ──────────────────────────────────────────────
+  void _openCommentary() {
+    final focusVerse = _prunedSelection().isEmpty
+        ? null
+        : (_prunedSelection().toList()..sort()).first;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => CommentarySheet(
+        bookKey: widget.bookKey,
+        chapter: _currentChapter,
+        highlightVerse: focusVerse,
+      ),
+    );
+  }
+
+  // ── 교차 참조 시트 ─────────────────────────────────────────
+  void _openCrossReference() {
+    final pruned = _prunedSelection();
+    if (pruned.isEmpty) return;
+    final sorted = pruned.toList()..sort();
+    final verse = sorted.first;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => CrossReferenceSheet(
+        version: widget.version,
+        bookKey: widget.bookKey,
+        chapter: _currentChapter,
+        verse: verse,
+        onSelect: (CrossRef r) {
+          Navigator.pop(context);
+          _clearSelection();
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => BibleReadPage(
+                version: widget.version,
+                bookKey: r.bookKey,
+                bookName: BibleBookNames.get(r.bookKey, AppLocale.current),
+                chapter: r.chapter,
+                totalChapters: BookSelectPage.getChapterCount(r.bookKey),
+                highlightVerse: r.verse,
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // ── 메모 (다중) ────────────────────────────────────────────
   void _goToMemo() {
-    if (_selectedVerse == null) return;
-    final ref = _makeVerseRef(_selectedVerse!);
+    final refs = _selectedRefs();
+    if (refs.isEmpty) return;
     _clearSelection();
-    _showMemoSelector(ref);
+    _showMemoSelector(refs);
   }
 
-  void _showMemoSelector(VerseRef verseRef) {
+  void _showMemoSelector(List<VerseRef> verseRefs) {
     final memos  = MemoService.getAll();
     final isDark = Theme.of(context).brightness == Brightness.dark;
     showModalBottomSheet(
@@ -287,21 +481,28 @@ class _BibleReadPageState extends State<BibleReadPage>
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
       builder: (_) => _MemoSelectorSheet(
-        verseRef:     verseRef,
+        verseRefs:    verseRefs,
         memos:        memos,
         isDark:       isDark,
         primaryColor: Theme.of(context).colorScheme.primary,
         onNewMemo: () {
           Navigator.pop(context);
           Navigator.push(context,
-            MaterialPageRoute(builder: (_) => MemoDetailPage(initialVerse: verseRef)),
+            MaterialPageRoute(
+              builder: (_) => MemoDetailPage(initialVerses: verseRefs),
+            ),
           ).then((_) => _loadChapterData(_currentChapter));
         },
         onExistingMemo: (memo) async {
           Navigator.pop(context);
-          final added = await MemoService.addVerse(memo.id, verseRef);
+          int added = 0;
+          for (final vr in verseRefs) {
+            if (await MemoService.addVerse(memo.id, vr)) added++;
+          }
           _loadChapterData(_currentChapter);
-          _snack(added ? '"${memo.previewTitle}"에 추가됐어요' : '이미 추가된 구절이에요');
+          _snack(added > 0
+              ? '"${memo.previewTitle}"에 $added절 추가'
+              : '이미 추가된 구절이에요');
         },
       ),
     );
@@ -336,14 +537,19 @@ class _BibleReadPageState extends State<BibleReadPage>
   }
 
   // ── 헬퍼 ───────────────────────────────────────────────────
-  VerseRef _makeVerseRef(int verseNum) => VerseRef(
-        version:   widget.version,
-        bookKey:   widget.bookKey,
-        bookName:  widget.bookName,
-        chapter:   _currentChapter,
-        verse:     verseNum,
-        verseText: verses[verseNum - 1],
-      );
+  // verses 범위를 방어해서 장 이동 중 out-of-range로 빨간 화면 뜨는 것 방지
+  VerseRef _makeVerseRef(int verseNum) {
+    final idx = verseNum - 1;
+    final text = (idx >= 0 && idx < verses.length) ? verses[idx] : '';
+    return VerseRef(
+      version:   widget.version,
+      bookKey:   widget.bookKey,
+      bookName:  widget.bookName,
+      chapter:   _currentChapter,
+      verse:     verseNum,
+      verseText: text,
+    );
+  }
 
   void _snack(String msg) {
     ScaffoldMessenger.of(context).clearSnackBars();
@@ -371,32 +577,55 @@ class _BibleReadPageState extends State<BibleReadPage>
             style: const TextStyle(fontWeight: FontWeight.bold)),
         centerTitle: true,
         actions: [
-          // 클래식 모드
+          // ── 절 탭 on/off (고정 위치: 첫 번째) ──
           IconButton(
             icon: Icon(
-              _classicMode ? Icons.menu_book_rounded : Icons.format_list_numbered_rounded,
+              _verseTapEnabled
+                  ? Icons.touch_app_rounded
+                  : Icons.do_not_touch_rounded,
               size: 20,
-              color: _classicMode ? primary : null,
+              color: _verseTapEnabled
+                  ? primary
+                  : (isDark ? Colors.grey.shade500 : Colors.grey.shade400),
             ),
-            tooltip: _classicMode ? '일반 모드' : '클래식 모드',
-            onPressed: () { setState(() => _classicMode = !_classicMode); _savePrefs(); },
+            tooltip: _verseTapEnabled ? '절 탭 끄기' : '절 탭 켜기',
+            onPressed: _toggleVerseTap,
           ),
-          // 주석
-          IconButton(
-            icon: Icon(Icons.comment_rounded, size: 20,
-                color: isDark ? Colors.grey.shade500 : Colors.grey.shade400),
-            tooltip: '주석 (준비 중)',
-            onPressed: () => _snack('주석 기능을 준비하고 있어요'),
-          ),
-          // 폰트 축소
+          // 폰트 축소 / 확대
           IconButton(
             icon: const Icon(Icons.text_decrease, size: 20),
+            tooltip: '글자 작게',
             onPressed: () => _changeFontSize(-2),
           ),
-          // 폰트 확대
           IconButton(
             icon: const Icon(Icons.text_increase, size: 20),
+            tooltip: '글자 크게',
             onPressed: () => _changeFontSize(2),
+          ),
+          // 클래식 모드 토글 (독립 버튼)
+          IconButton(
+            icon: Icon(
+              _classicMode
+                  ? Icons.format_list_numbered_rounded
+                  : Icons.menu_book_rounded,
+              size: 20,
+              color: _classicMode
+                  ? primary
+                  : (isDark ? Colors.grey.shade400 : Colors.grey.shade600),
+            ),
+            tooltip: _classicMode ? '일반 모드로' : '클래식 모드로',
+            onPressed: () {
+              setState(() => _classicMode = !_classicMode);
+              _savePrefs();
+            },
+          ),
+          // 주석 (독립 버튼)
+          IconButton(
+            icon: Icon(Icons.comment_rounded,
+                size: 20,
+                color: isDark ? Colors.grey.shade400 : Colors.grey.shade600),
+            tooltip: '주석',
+            onPressed: _openCommentary,
           ),
           const SizedBox(width: 4),
         ],
@@ -410,32 +639,17 @@ class _BibleReadPageState extends State<BibleReadPage>
               controller:    _pageController,
               onPageChanged: _onPageChanged,
               itemCount:     widget.totalChapters,
-              // 두 손가락 pinch 시 페이지 스와이프 잠김
-              physics: _isPinching
-                  ? const NeverScrollableScrollPhysics()
-                  : const PageScrollPhysics(),
+              physics:       const PageScrollPhysics(),
               itemBuilder: (_, pageIndex) {
                 final isCurrent = pageIndex + 1 == _currentChapter;
-                // ── RawGestureDetector: PageView보다 pinch 우선 ─
-                return RawGestureDetector(
-                  gestures: {
-                    ScaleGestureRecognizer:
-                        GestureRecognizerFactoryWithHandlers<ScaleGestureRecognizer>(
-                      () => ScaleGestureRecognizer(),
-                      (inst) {
-                        inst
-                          ..onStart  = _onScaleStart
-                          ..onUpdate = _onScaleUpdate
-                          ..onEnd    = _onScaleEnd;
-                      },
-                    ),
-                  },
-                  child: GestureDetector(
-                    onTap: _clearSelection,
-                    child: isLoading && isCurrent
-                        ? const Center(child: CircularProgressIndicator())
-                        : _buildVerseList(isDark, textColor, primary),
-                  ),
+                // verses 비었거나 로딩 중이면 스피너만 (빈 리스트 접근 방지)
+                final showLoading = isCurrent && (isLoading || verses.isEmpty);
+                return GestureDetector(
+                  onTap: _clearSelection,
+                  behavior: HitTestBehavior.opaque,
+                  child: showLoading
+                      ? const Center(child: CircularProgressIndicator())
+                      : _buildVerseList(isDark, textColor, primary),
                 );
               },
             ),
@@ -446,25 +660,30 @@ class _BibleReadPageState extends State<BibleReadPage>
             left: 0, right: 0, bottom: 0,
             child: SlideTransition(
               position: _barSlide,
-              child: _selectedVerse != null && verses.isNotEmpty
-                  ? _VerseActionBar(
-                      verseRef:            _makeVerseRef(_selectedVerse!),
-                      isDark:              isDark,
-                      isBookmarked:        _bookmarksByVerse.containsKey(_selectedVerse),
-                      currentHighlightKey: _highlightsByVerse[_selectedVerse]?.colorKey,
-                      hasMemo:             _memoVerseNumbers.contains(_selectedVerse),
-                      onClose:             _clearSelection,
-                      onHighlight:         _applyHighlight,
-                      onBookmark:          _toggleBookmark,
-                      onCopy:              _copyVerse,
-                      onMemo:              _goToMemo,
-                    )
-                  : const SizedBox(),
+              child: () {
+                final pruned = _prunedSelection();
+                if (pruned.isEmpty || verses.isEmpty) return const SizedBox();
+                final sortedNums = pruned.toList()..sort();
+                final refs = sortedNums.map(_makeVerseRef).toList();
+                return _VerseActionBar(
+                  verseRefs: refs,
+                  isDark: isDark,
+                  allBookmarked: pruned.every(_bookmarksByVerse.containsKey),
+                  sharedHighlightKey: _computeSharedHighlight(pruned),
+                  anyMemo: pruned.any(_memoVerseNumbers.contains),
+                  onClose: _clearSelection,
+                  onHighlight: _applyHighlight,
+                  onBookmark: _toggleBookmark,
+                  onCopy: _copyVerse,
+                  onMemo: _goToMemo,
+                  onCrossRef: _openCrossReference,
+                );
+              }(),
             ),
           ),
 
           // ── 하단 고정 버튼 (스크롤 시 숨김) ─────────────
-          if (_selectedVerse == null)
+          if (_prunedSelection().isEmpty)
             Positioned(
               left: 0, right: 0, bottom: 0,
               child: AnimatedSlide(
@@ -503,7 +722,7 @@ class _BibleReadPageState extends State<BibleReadPage>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: List.generate(verses.length, (index) {
           final verseNum    = index + 1;
-          final isSelected  = _selectedVerse == verseNum;
+          final isSelected  = _selectedVerses.contains(verseNum);
           final isBookmarked = _bookmarksByVerse.containsKey(verseNum);
           final highlight   = _highlightsByVerse[verseNum];
           final hasMemo     = _memoVerseNumbers.contains(verseNum);
@@ -513,26 +732,30 @@ class _BibleReadPageState extends State<BibleReadPage>
 
           final key = _verseKeys.putIfAbsent(verseNum, () => GlobalKey());
 
+          // 보물 컨셉: 북마크는 테마와 무관하게 골드로 통일
+          const treasureGold = Color(0xFFC9A84C);
           Color? bg;
           if (isSelected)        bg = primary.withOpacity(isDark ? 0.2 : 0.1);
           else if (highlight != null) {
             final base = highlight.highlightColor.color;
             bg = isDark ? base.withOpacity(0.35) : base.withOpacity(0.65);
           } else if (isBookmarked) {
-            bg = isDark ? Colors.amber.shade900.withOpacity(0.25) : Colors.amber.shade50;
+            bg = isDark
+                ? treasureGold.withOpacity(0.18)
+                : treasureGold.withOpacity(0.10);
           } else if (isTarget) {
             bg = primary.withOpacity(isDark ? 0.15 : 0.08);
           }
 
           Color? borderColor;
           if (isSelected)        borderColor = primary;
-          else if (isBookmarked) borderColor = Colors.amber.shade500;
+          else if (isBookmarked) borderColor = treasureGold;
           else if (hasMemo)      borderColor = primary.withOpacity(0.5);
           else if (isTarget)     borderColor = primary.withOpacity(0.4);
 
           Color numColor = Colors.grey.shade500;
           if (isSelected || hasMemo || isTarget) numColor = primary;
-          else if (isBookmarked) numColor = Colors.amber.shade600;
+          else if (isBookmarked) numColor = treasureGold;
 
           return KeyedSubtree(
             key: key,
@@ -754,26 +977,46 @@ class _FBtn extends StatelessWidget {
       );
 }
 
-// ── 절 액션바 ─────────────────────────────────────────────────
+// 형광펜 색상에 의미 라벨을 매핑 — 단순 색이름이 아닌 '용도'로 인식하도록
+const Map<String, String> _hlMeaning = {
+  'yellow': '핵심',
+  'green':  '적용',
+  'blue':   '질문',
+  'pink':   '감동',
+  'orange': '기도',
+};
+
+// ── 절 액션바 (다중 선택 지원) ────────────────────────────────
 class _VerseActionBar extends StatelessWidget {
-  final VerseRef   verseRef;
-  final bool       isDark;
-  final bool       isBookmarked;
-  final String?    currentHighlightKey;
-  final bool       hasMemo;
+  final List<VerseRef> verseRefs;
+  final bool           isDark;
+  final bool           allBookmarked;
+  final String?        sharedHighlightKey; // 모두 동일 색이면 그 키, 아니면 null
+  final bool           anyMemo;
   final VoidCallback         onClose;
   final ValueChanged<String> onHighlight;
   final VoidCallback         onBookmark;
   final VoidCallback         onCopy;
   final VoidCallback         onMemo;
+  final VoidCallback         onCrossRef;
 
   const _VerseActionBar({
-    required this.verseRef, required this.isDark,
-    required this.isBookmarked, required this.currentHighlightKey,
-    required this.hasMemo, required this.onClose,
+    required this.verseRefs, required this.isDark,
+    required this.allBookmarked, required this.sharedHighlightKey,
+    required this.anyMemo, required this.onClose,
     required this.onHighlight, required this.onBookmark,
     required this.onCopy, required this.onMemo,
+    required this.onCrossRef,
   });
+
+  // 범위 라벨: 단일 "창세기 1:3", 다중 "창세기 1:3-7"
+  String get _rangeLabel {
+    if (verseRefs.isEmpty) return '';
+    final first = verseRefs.first;
+    if (verseRefs.length == 1) return first.label;
+    final last = verseRefs.last;
+    return '${first.bookName} ${first.chapter}:${first.verse}-${last.verse}';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -782,6 +1025,7 @@ class _VerseActionBar extends StatelessWidget {
     final sub     = const Color(0xFF8E8E93);
     final div     = isDark ? const Color(0xFF38383A) : const Color(0xFFE8E8E8);
     final primary = Theme.of(context).colorScheme.primary;
+    final count   = verseRefs.length;
 
     return Container(
       decoration: BoxDecoration(
@@ -810,10 +1054,38 @@ class _VerseActionBar extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Row(
                 children: [
-                  Text(verseRef.label,
-                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: text)),
-                  const Spacer(),
-                  _TopBtn(icon: Icons.copy_rounded, label: '복사', isDark: isDark, onTap: onCopy),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(_rangeLabel,
+                            style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                                color: text),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis),
+                        const SizedBox(height: 2),
+                        Text('$count절 선택됨',
+                            style: TextStyle(fontSize: 11, color: primary,
+                                fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  _TopBtn(
+                    icon: Icons.hub_rounded,
+                    label: '참조',
+                    isDark: isDark,
+                    onTap: onCrossRef,
+                    disabled: count != 1,
+                    disabledTooltip:
+                        '한 절만 선택하면 교차참조를 볼 수 있어요',
+                  ),
+                  const SizedBox(width: 6),
+                  _TopBtn(icon: Icons.copy_rounded, label: '복사',
+                      isDark: isDark, onTap: onCopy),
                   const SizedBox(width: 8),
                   GestureDetector(
                     onTap: onClose,
@@ -831,50 +1103,111 @@ class _VerseActionBar extends StatelessWidget {
             ),
             const SizedBox(height: 14),
             Divider(height: 1, color: div),
-            const SizedBox(height: 14),
-            // 형광펜
+            const SizedBox(height: 12),
+            // ── 형광펜 섹션 (말씀 표시하기) ──
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: Row(
                 children: [
+                  Icon(Icons.format_color_fill_rounded, size: 13, color: primary),
+                  const SizedBox(width: 6),
+                  Text('말씀 표시',
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: text.withOpacity(0.8),
+                          letterSpacing: 0.2)),
+                  const SizedBox(width: 8),
+                  if (sharedHighlightKey != null)
+                    Expanded(
+                      child: Text(
+                        _hlMeaning[sharedHighlightKey!] ?? '',
+                        style: TextStyle(
+                            fontSize: 11,
+                            color: primary,
+                            fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 18),
+              child: Row(
+                children: [
+                  // 지우기 버튼 (현재 표시를 제거)
                   GestureDetector(
-                    onTap: currentHighlightKey != null
-                        ? () => onHighlight(currentHighlightKey!) : null,
+                    onTap: sharedHighlightKey != null
+                        ? () => onHighlight(sharedHighlightKey!)
+                        : null,
                     child: Container(
-                      width: 38, height: 38,
-                      margin: const EdgeInsets.only(right: 12),
+                      width: 40, height: 40,
+                      margin: const EdgeInsets.only(right: 10),
                       decoration: BoxDecoration(
-                        color: isDark ? const Color(0xFF3A3A3C) : Colors.grey.shade100,
+                        color: isDark
+                            ? const Color(0xFF2C2C2E)
+                            : Colors.grey.shade100,
                         shape: BoxShape.circle,
                         border: Border.all(
-                          color: currentHighlightKey != null
-                              ? Colors.grey.shade400 : Colors.transparent,
-                          width: 1.5,
+                          color: sharedHighlightKey != null
+                              ? sub.withOpacity(0.5)
+                              : Colors.transparent,
+                          width: 1,
                         ),
                       ),
-                      child: Icon(Icons.format_color_reset_rounded, size: 18,
-                          color: currentHighlightKey != null ? sub : sub.withOpacity(0.3)),
+                      child: Icon(Icons.format_color_reset_rounded,
+                          size: 18,
+                          color: sharedHighlightKey != null
+                              ? sub
+                              : sub.withOpacity(0.3)),
                     ),
                   ),
+                  // 색 + 용도 라벨
                   ...HighlightColor.values.map((hc) {
-                    final sel = currentHighlightKey == hc.key;
-                    return GestureDetector(
-                      onTap: () => onHighlight(hc.key),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 150),
-                        width: sel ? 42 : 36, height: sel ? 42 : 36,
-                        margin: const EdgeInsets.only(right: 10),
-                        decoration: BoxDecoration(
-                          color: hc.color, shape: BoxShape.circle,
-                          border: Border.all(
-                            color: sel ? Colors.grey.shade600 : Colors.transparent,
-                            width: 2.5,
-                          ),
-                          boxShadow: sel
-                              ? [BoxShadow(color: hc.color.withOpacity(0.5), blurRadius: 6)]
-                              : null,
+                    final sel = sharedHighlightKey == hc.key;
+                    final meaning = _hlMeaning[hc.key] ?? '';
+                    return Expanded(
+                      child: GestureDetector(
+                        onTap: () => onHighlight(hc.key),
+                        behavior: HitTestBehavior.opaque,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            AnimatedContainer(
+                              duration: const Duration(milliseconds: 160),
+                              width: sel ? 34 : 28,
+                              height: sel ? 34 : 28,
+                              decoration: BoxDecoration(
+                                color: hc.color,
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: sel ? primary : Colors.transparent,
+                                  width: 2.5,
+                                ),
+                                boxShadow: sel
+                                    ? [
+                                        BoxShadow(
+                                            color: hc.color.withOpacity(0.55),
+                                            blurRadius: 8),
+                                      ]
+                                    : null,
+                              ),
+                              child: sel
+                                  ? const Icon(Icons.check_rounded,
+                                      size: 14, color: Colors.black54)
+                                  : null,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(meaning,
+                                style: TextStyle(
+                                    fontSize: 10,
+                                    color: sel ? primary : sub,
+                                    fontWeight: sel
+                                        ? FontWeight.w700
+                                        : FontWeight.w500)),
+                          ],
                         ),
-                        child: sel ? const Icon(Icons.check_rounded, size: 16, color: Colors.black54) : null,
                       ),
                     );
                   }),
@@ -890,15 +1223,27 @@ class _VerseActionBar extends StatelessWidget {
                 children: [
                   _ActionBtn(
                     icon: Icons.edit_note_rounded,
-                    label: hasMemo ? '노트 수정' : '노트',
-                    isDark: isDark, isActive: hasMemo, onTap: onMemo,
+                    label: anyMemo ? '노트 수정' : '노트',
+                    isDark: isDark, isActive: anyMemo, onTap: onMemo,
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 10),
+                  // 북마크 = 보물 표시. 라이트·다크 모두 골드로 통일
                   _ActionBtn(
-                    icon: isBookmarked ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
-                    label: isBookmarked ? '북마크 해제' : '북마크',
-                    isDark: isDark, isActive: isBookmarked,
-                    activeColor: Colors.amber.shade600, onTap: onBookmark,
+                    icon: allBookmarked
+                        ? Icons.bookmark_rounded
+                        : Icons.bookmark_outline_rounded,
+                    label: allBookmarked ? '보물 해제' : '보물 표시',
+                    isDark: isDark,
+                    isActive: allBookmarked,
+                    activeColor: const Color(0xFFC9A84C),
+                    onTap: onBookmark,
+                  ),
+                  const SizedBox(width: 10),
+                  _ActionBtn(
+                    icon: Icons.deselect_rounded,
+                    label: '전체 해제',
+                    isDark: isDark, isActive: false,
+                    onTap: onClose,
                   ),
                 ],
               ),
@@ -913,7 +1258,7 @@ class _VerseActionBar extends StatelessWidget {
 
 // ── 메모 선택 시트 ────────────────────────────────────────────
 class _MemoSelectorSheet extends StatelessWidget {
-  final VerseRef       verseRef;
+  final List<VerseRef> verseRefs;
   final List<Memo>     memos;
   final bool           isDark;
   final Color          primaryColor;
@@ -921,10 +1266,18 @@ class _MemoSelectorSheet extends StatelessWidget {
   final ValueChanged<Memo> onExistingMemo;
 
   const _MemoSelectorSheet({
-    required this.verseRef, required this.memos,
+    required this.verseRefs, required this.memos,
     required this.isDark, required this.primaryColor,
     required this.onNewMemo, required this.onExistingMemo,
   });
+
+  String get _headerLabel {
+    if (verseRefs.isEmpty) return '';
+    final first = verseRefs.first;
+    if (verseRefs.length == 1) return first.label;
+    final last = verseRefs.last;
+    return '${first.bookName} ${first.chapter}:${first.verse}-${last.verse} · ${verseRefs.length}절';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -952,7 +1305,7 @@ class _MemoSelectorSheet extends StatelessWidget {
             Text('노트에 추가',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: text)),
             const SizedBox(height: 3),
-            Text(verseRef.label, style: TextStyle(fontSize: 13, color: sub)),
+            Text(_headerLabel, style: TextStyle(fontSize: 13, color: sub)),
             const SizedBox(height: 12),
             Divider(height: 1, color: div),
             _SelectorItem(icon: Icons.add_circle_outline_rounded,
@@ -1023,24 +1376,53 @@ class _MemoSelectorSheet extends StatelessWidget {
 class _TopBtn extends StatelessWidget {
   final IconData icon; final String label;
   final bool isDark;   final VoidCallback onTap;
-  const _TopBtn({required this.icon, required this.label,
-      required this.isDark, required this.onTap});
+  final bool disabled;
+  final String? disabledTooltip;
+  const _TopBtn({
+    required this.icon, required this.label,
+    required this.isDark, required this.onTap,
+    this.disabled = false,
+    this.disabledTooltip,
+  });
   @override
-  Widget build(BuildContext context) => GestureDetector(
-    onTap: onTap,
-    child: Container(
+  Widget build(BuildContext context) {
+    final base = const Color(0xFF8E8E93);
+    final color = disabled ? base.withOpacity(0.35) : base;
+    final bgBase = isDark ? const Color(0xFF3A3A3C) : Colors.grey.shade100;
+    final bg = disabled ? bgBase.withOpacity(0.5) : bgBase;
+
+    final body = Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF3A3A3C) : Colors.grey.shade100,
+        color: bg,
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(icon, size: 14, color: const Color(0xFF8E8E93)),
+        Icon(icon, size: 14, color: color),
         const SizedBox(width: 4),
-        Text(label, style: const TextStyle(fontSize: 13, color: Color(0xFF8E8E93))),
+        Text(label, style: TextStyle(fontSize: 13, color: color)),
       ]),
-    ),
-  );
+    );
+
+    if (disabled) {
+      final tip = disabledTooltip;
+      final wrapped = GestureDetector(
+        onTap: tip == null ? null : () {
+          ScaffoldMessenger.of(context).clearSnackBars();
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(tip),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12)),
+          ));
+        },
+        child: body,
+      );
+      return tip == null ? wrapped : Tooltip(message: tip, child: wrapped);
+    }
+    return GestureDetector(onTap: onTap, child: body);
+  }
 }
 
 class _ActionBtn extends StatelessWidget {

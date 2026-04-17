@@ -5,7 +5,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_quill/flutter_quill.dart' show FlutterQuillLocalizations;
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'pages/main_navigation_page.dart';
+import 'pages/splash_page.dart';
 import 'l10n/app_strings.dart';
 import 'services/bookmark_service.dart';
 import 'services/highlight_service.dart';
@@ -202,7 +202,7 @@ class _BibleAppState extends State<BibleApp> {
           ),
         ),
       ),
-      home: const MainNavigationPage(),
+      home: const SplashPage(),
     );
   }
 }

@@ -5,6 +5,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
 import '../models/highlight.dart';
 import '../models/verse_ref.dart';
+import 'experience_service.dart';
 
 class HighlightService {
   static const _boxName = 'bible_highlights_v1';
@@ -58,6 +59,8 @@ class HighlightService {
       updatedAt: now,
     );
     await _box.put(highlight.id, json.encode(highlight.toJson()));
+    // 경험치 지급 (+1). 색상 변경·토글 삭제는 지급 안 함.
+    await ExperienceService.addExp(ExperienceService.expPerHighlight);
     return highlight;
   }
 

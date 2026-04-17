@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter analyze *)",
+      "Bash(mkdir -p /tmp/strongs)",
+      "Read(//tmp/**)",
+      "Bash(curl -sL -o hebrew.json \"https://raw.githubusercontent.com/openscriptures/strongs/master/hebrew/strongs-hebrew-dictionary.json\")",
+      "Bash(curl -sL -o greek.json \"https://raw.githubusercontent.com/openscriptures/strongs/master/greek/strongs-greek-dictionary.json\")",
+      "Bash(curl -sL \"https://api.github.com/repos/openscriptures/strongs/contents/hebrew\")",
+      "Bash(curl -sL -o hebrew.js \"https://raw.githubusercontent.com/openscriptures/strongs/master/hebrew/strongs-hebrew-dictionary.js\")",
+      "Bash(curl -sL -o greek.js \"https://raw.githubusercontent.com/openscriptures/strongs/master/greek/strongs-greek-dictionary.js\")",
+      "Bash(python -c \"import json; d=json.load\\(open\\('c:/dev/bible_app/assets/data/hebrew_dict.json', encoding='utf-8'\\)\\); print\\('count:', len\\(d\\)\\); print\\('first:', d[0]\\); ids=[e['id'] for e in d]; print\\('min/max id:', min\\(ids\\), max\\(ids\\)\\); subs=set\\(e.get\\('sub'\\) for e in d if e.get\\('sub'\\)\\); print\\('subs:', subs\\)\")",
+      "Bash(python tools/enrich_dict.py)",
+      "Bash(python -c ' *)",
+      "Bash(mkdir -p c:/dev/bible_app/tools/_src)",
+      "Bash(curl -sL \"https://api.github.com/repos/HistoricalChristianFaith/Commentaries-Database/contents\")",
+      "Bash(curl -sL -o cross_refs.json \"https://raw.githubusercontent.com/josephilipraja/bible-cross-reference-json/master/cross_references.json\")",
+      "Bash(curl -sL \"https://api.github.com/repos/josephilipraja/bible-cross-reference-json/contents\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/josephilipraja/bible-cross-reference-json/master/1.json\" -o c:/dev/bible_app/tools/_src/xref_1.json)",
+      "Bash(grep -iE \"^\\(genesis|matthew|john|romans|john|luke|mark|acts\\)$\")",
+      "Bash(curl -sL \"https://api.github.com/repos/HistoricalChristianFaith/Commentaries-Database/releases/latest\")",
+      "Bash(curl -sL -o commentaries.sqlite \"https://github.com/HistoricalChristianFaith/Commentaries-Database/releases/download/latest/commentaries.sqlite\")",
+      "Bash(python tools/build_cross_ref.py)",
+      "Bash(curl -sL \"https://api.github.com/repos/josephilipraja/bible-cross-reference-json/contents?per_page=100\")",
+      "Bash(python tools/build_commentary.py)",
+      "Bash(python tools/translate_commentary.py)",
+      "Bash(flutter pub *)"
+    ]
+  }
+}

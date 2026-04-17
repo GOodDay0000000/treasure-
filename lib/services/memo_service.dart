@@ -5,6 +5,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
 import '../models/memo.dart';
 import '../models/verse_ref.dart';
+import 'experience_service.dart';
 
 class MemoService {
   static const _boxName = 'bible_memos_v2';
@@ -47,6 +48,8 @@ class MemoService {
       updatedAt: now,
     );
     await _box.put(memo.id, json.encode(memo.toJson()));
+    // 경험치 지급 (+5).
+    await ExperienceService.addExp(ExperienceService.expPerMemo);
     return memo;
   }
 

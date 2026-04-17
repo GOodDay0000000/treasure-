@@ -13,6 +13,7 @@ import 'my_page.dart';
 import 'dictionary_page.dart';
 import 'bookmark_page.dart';
 import 'highlight_list_page.dart';
+import 'hymn_page.dart';
 import '../main.dart';
 
 // ── 번역본 모델 ────────────────────────────────────────────────
@@ -144,7 +145,7 @@ class _BookSelectPageState extends State<BookSelectPage> {
   String _bookName    = '창세기';
   int    _chapter     = 1;
   String _previewText = '';
-  List<String> _shortcuts = ['search', 'memo', 'bookmark', 'dictionary'];
+  List<String> _shortcuts = ['search', 'memo', 'bookmark', 'hymn'];
 
   @override
   void initState() {
@@ -160,7 +161,7 @@ class _BookSelectPageState extends State<BookSelectPage> {
     final bookName = prefs.getString('last_book_name') ?? '창세기';
     final chapter  = prefs.getInt('last_chapter')      ?? 1;
     final shortcuts = prefs.getStringList('main_shortcuts')
-        ?? ['search', 'memo', 'bookmark', 'dictionary'];
+        ?? ['search', 'memo', 'bookmark', 'hymn'];
 
     String preview = '';
     try {
@@ -181,7 +182,7 @@ class _BookSelectPageState extends State<BookSelectPage> {
         _chapter      = chapter;
         _previewText  = preview;
         _shortcuts    = shortcuts.length == 4 ? shortcuts
-            : ['search', 'memo', 'bookmark', 'dictionary'];
+            : ['search', 'memo', 'bookmark', 'hymn'];
       });
     }
   }
@@ -243,6 +244,10 @@ class _BookSelectPageState extends State<BookSelectPage> {
       case 'mypage':
         Navigator.push(context,
             MaterialPageRoute(builder: (_) => MyPage()));
+        break;
+      case 'hymn':
+        Navigator.push(context,
+            MaterialPageRoute(builder: (_) => const HymnPage()));
         break;
     }
   }
@@ -899,6 +904,7 @@ class _QuickActions extends StatelessWidget {
     'search':     {'label': '검색',   'icon': Icons.search_rounded,             'available': true},
     'memo':       {'label': '메모',   'icon': Icons.edit_note_rounded,          'available': true},
     'bookmark':   {'label': '북마크', 'icon': Icons.bookmark_rounded,           'available': true},
+    'hymn':       {'label': '찬송가', 'icon': Icons.music_note_rounded,         'available': true},
     'dictionary': {'label': '사전',   'icon': Icons.chrome_reader_mode_rounded, 'available': true},
     'highlight':  {'label': '형광펜', 'icon': Icons.highlight_rounded,          'available': true},
     'mypage':     {'label': '마이',   'icon': Icons.person_rounded,             'available': true},

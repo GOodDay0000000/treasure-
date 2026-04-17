@@ -48,6 +48,70 @@ class _HymnPageState extends State<HymnPage>
     }
   }
 
+  // 영문 탭(index=2)은 저작권 문제로 사용 불가 → 탭 자체를 되돌리고 다이얼로그만 표시.
+  // TabBar.onTap에서 호출 — 실제 탭 전환 전에 가로채서 다이얼로그 띄움.
+  int _prevTabIndex = 0;
+  void _handleTabTap(int i) {
+    if (i == 2) {
+      _showCopyrightDialog();
+      // TabBar가 내부적으로 animateTo(2)를 예약하므로 다음 프레임에서 snap-back
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _tabController.animateTo(_prevTabIndex,
+            duration: Duration.zero);
+      });
+    } else {
+      _prevTabIndex = i;
+    }
+  }
+
+  void _showCopyrightDialog() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primary = Theme.of(context).colorScheme.primary;
+    final text = isDark ? Colors.white : Colors.black;
+    final sub = isDark ? Colors.grey.shade400 : Colors.grey.shade600;
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF1B2D3F) : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.copyright_rounded, size: 20, color: primary),
+            const SizedBox(width: 8),
+            Text('저작권 안내',
+                style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: text)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '다국어 찬송가는 저작권 문제로\n현재 지원이 어렵습니다.',
+              style: TextStyle(fontSize: 14, color: text, height: 1.6),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Due to copyright restrictions,\nmultilingual hymns are not\ncurrently supported.',
+              style: TextStyle(fontSize: 12, color: sub, height: 1.5),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('확인', style: TextStyle(color: primary)),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _tabController.dispose();
@@ -185,6 +249,12 @@ class _HymnPageState extends State<HymnPage>
       appBar: AppBar(
         backgroundColor: bg,
         elevation: 0,
+        leading: Navigator.canPop(context)
+            ? IconButton(
+                icon: const Icon(Icons.arrow_back_ios_rounded, size: 20),
+                onPressed: () => Navigator.pop(context),
+              )
+            : null,
         automaticallyImplyLeading: false,
         title: _showSearch
             ? TextField(
@@ -236,6 +306,7 @@ class _HymnPageState extends State<HymnPage>
         bottom: !_showSearch
             ? TabBar(
           controller: _tabController,
+          onTap: _handleTabTap,
           indicatorColor: primary,
           labelColor: primary,
           unselectedLabelColor: sub,
@@ -325,10 +396,9 @@ class _HymnPageState extends State<HymnPage>
             builder: (_) => HymnViewerPage(
               initialIndex: number - 1,
               totalCount:   HymnService.totalHymns,
-              getImageProvider: (idx) async {
+              getFile: (idx) async {
                 final path = await HymnService.getHymnPath(idx + 1);
-                if (path == null) return null;
-                return FileImage(File(path));
+                return path == null ? null : File(path);
               },
               labelBuilder: (idx) => '${idx + 1}장',
             ),
@@ -432,8 +502,7 @@ class _HymnPageState extends State<HymnPage>
                 builder: (_) => HymnViewerPage(
                   initialIndex: i,
                   totalCount:   _myScores.length,
-                  getImageProvider: (idx) async =>
-                      FileImage(_myScores[idx]),
+                  getFile: (idx) async => _myScores[idx],
                   labelBuilder: (idx) =>
                       p.basenameWithoutExtension(
                           _myScores[idx].path)
@@ -563,6 +632,27 @@ class _HymnPageState extends State<HymnPage>
             ),
           ),
         ),
+        const SizedBox(height: 20),
+        // 저작권 안내 (한/영)
+        Text(
+          '새찬송가는 한국 저작권 규정에 따라\n'
+          '개인 사용 목적으로만 제공됩니다.\n'
+          '다국어 찬송가는 저작권 문제로\n'
+          '현재 지원이 어렵습니다.',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 11, color: sub, height: 1.7),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Korean Hymns only. Due to copyright\n'
+          'restrictions, multilingual hymns are\n'
+          'not currently supported.',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+              fontSize: 11,
+              color: sub.withOpacity(0.7),
+              height: 1.7),
+        ),
       ]),
     ));
   }
@@ -648,17 +738,20 @@ class _AddBtn extends StatelessWidget {
 }
 
 // ── 뷰어 ────────────────────────────────────────────────────
+// 주어진 index에 대한 원본 파일을 돌려준다. 없으면 null.
+typedef HymnFileResolver = Future<File?> Function(int index);
+
 class HymnViewerPage extends StatefulWidget {
   final int   initialIndex;
   final int   totalCount;
-  final Future<ImageProvider?> Function(int) getImageProvider;
+  final HymnFileResolver getFile;
   final String Function(int) labelBuilder;
 
   const HymnViewerPage({
     super.key,
     required this.initialIndex,
     required this.totalCount,
-    required this.getImageProvider,
+    required this.getFile,
     required this.labelBuilder,
   });
 
@@ -666,38 +759,17 @@ class HymnViewerPage extends StatefulWidget {
   State<HymnViewerPage> createState() => _HymnViewerPageState();
 }
 
+// 최대한 단순화한 뷰어 — AppBar/터치 충돌 없이 Image.memory로 직접 렌더링.
+// 각 페이지는 _HymnPage가 자체 FutureBuilder로 파일을 읽어와 표시.
 class _HymnViewerPageState extends State<HymnViewerPage> {
   late PageController _pageCtrl;
   late int _curIdx;
-  bool _showBars = true;
-  // 이미지 캐시
-  final Map<int, Uint8List?> _cache = {};
 
   @override
   void initState() {
     super.initState();
-    _curIdx   = widget.initialIndex;
+    _curIdx = widget.initialIndex;
     _pageCtrl = PageController(initialPage: widget.initialIndex);
-    // 현재 + 앞뒤 이미지 미리 로드
-    _preload(widget.initialIndex);
-  }
-
-  Future<void> _preload(int idx) async {
-    for (int i = idx - 1; i <= idx + 1; i++) {
-      if (i < 0 || i >= widget.totalCount) continue;
-      if (_cache.containsKey(i)) continue;
-      try {
-        final provider = await widget.getImageProvider(i);
-        if (provider is FileImage) {
-          final bytes = await provider.file.readAsBytes();
-          if (mounted) setState(() => _cache[i] = bytes);
-        } else {
-          if (mounted) setState(() => _cache[i] = null);
-        }
-      } catch (_) {
-        if (mounted) setState(() => _cache[i] = null);
-      }
-    }
   }
 
   @override
@@ -706,172 +778,258 @@ class _HymnViewerPageState extends State<HymnViewerPage> {
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final isDark  = Theme.of(context).brightness == Brightness.dark;
-    final bg      = Colors.black;
-    final primary = Theme.of(context).colorScheme.primary;
-    final div     = const Color(0xFF2C2C2E);
+  void _prev() {
+    if (_curIdx > 0) {
+      _pageCtrl.previousPage(
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeInOut);
+    }
+  }
 
-    return Scaffold(
-      backgroundColor: bg,
-      extendBodyBehindAppBar: true,
-      appBar: _showBars
-          ? AppBar(
-        backgroundColor: Colors.black.withOpacity(0.6),
-        elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white),
-        title: Text(widget.labelBuilder(_curIdx),
-            style: const TextStyle(
-                color: Colors.white, fontWeight: FontWeight.bold)),
-        centerTitle: true,
-      )
-          : null,
-      body: GestureDetector(
-        onTap: () => setState(() => _showBars = !_showBars),
-        child: PageView.builder(
-          controller:    _pageCtrl,
-          itemCount:     widget.totalCount,
-          onPageChanged: (i) {
-            setState(() => _curIdx = i);
-            _preload(i);
-          },
-          itemBuilder: (_, index) {
-            final bytes = _cache[index];
-            // 아직 로드 안됨
-            if (!_cache.containsKey(index)) {
-              _preload(index);
-              return const Center(
-                  child: CircularProgressIndicator(color: Colors.white));
-            }
-            // 파일 없음
-            if (bytes == null) {
-              return Center(child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.image_not_supported_rounded,
-                      size: 64, color: Colors.white54),
-                  const SizedBox(height: 12),
-                  Text('\${index + 1}장 이미지 없음',
-                      style: const TextStyle(color: Colors.white54)),
-                ],
-              ));
-            }
-            // 이미지 표시 (InteractiveViewer + Image.memory)
-            return InteractiveViewer(
-              minScale: 0.5,
-              maxScale: 5.0,
-              child: Center(
-                child: Image.memory(
-                  bytes,
-                  fit:          BoxFit.contain,
-                  gaplessPlayback: true,
-                  errorBuilder: (_, __, ___) => const Center(
-                    child: Icon(Icons.broken_image_rounded,
-                        size: 64, color: Colors.white54),
-                  ),
-                ),
-              ),
-            );
-          },
+  void _next() {
+    if (_curIdx < widget.totalCount - 1) {
+      _pageCtrl.nextPage(
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeInOut);
+    }
+  }
+
+  void _showJumpDialog() {
+    final primary = Theme.of(context).colorScheme.primary;
+    final ctrl = TextEditingController(text: '${_curIdx + 1}');
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF1C1C1E),
+        title: const Text('장 번호로 이동',
+            style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: Colors.white)),
+        content: TextField(
+          controller: ctrl,
+          keyboardType: TextInputType.number,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: '1 ~ ${widget.totalCount}',
+            hintStyle: const TextStyle(color: Colors.white38),
+            border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10)),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: BorderSide(color: primary, width: 2),
+            ),
+          ),
         ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('취소',
+                  style: TextStyle(color: Colors.white54))),
+          ElevatedButton(
+            onPressed: () {
+              final n = int.tryParse(ctrl.text);
+              if (n != null && n >= 1 && n <= widget.totalCount) {
+                Navigator.pop(context);
+                _pageCtrl.jumpToPage(n - 1);
+              }
+            },
+            style: ElevatedButton.styleFrom(
+                backgroundColor: primary,
+                foregroundColor: Colors.black),
+            child: const Text('이동'),
+          ),
+        ],
       ),
-      bottomNavigationBar: _showBars
-          ? Container(
-        color: Colors.black.withOpacity(0.6),
-        padding: const EdgeInsets.symmetric(
-            horizontal: 20, vertical: 12),
-        child: SafeArea(top: false,
-          child: Row(children: [
-            IconButton(
-              onPressed: _curIdx > 0
-                  ? () => _pageCtrl.previousPage(
-                  duration: const Duration(milliseconds: 300),
-                  curve: Curves.easeInOut)
-                  : null,
-              icon: Icon(Icons.arrow_back_ios_rounded,
-                  color: _curIdx > 0
-                      ? Colors.white : Colors.white30),
-            ),
-            Expanded(child: GestureDetector(
-              onTap: () => _showJumpDialog(context, primary),
-              child: Center(child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 20, vertical: 8),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  const Icon(Icons.music_note_rounded,
-                      size: 14, color: Colors.white),
-                  const SizedBox(width: 6),
-                  Text(widget.labelBuilder(_curIdx),
-                      style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white)),
-                ]),
-              )),
-            )),
-            IconButton(
-              onPressed: _curIdx < widget.totalCount - 1
-                  ? () => _pageCtrl.nextPage(
-                  duration: const Duration(milliseconds: 300),
-                  curve: Curves.easeInOut)
-                  : null,
-              icon: Icon(Icons.arrow_forward_ios_rounded,
-                  color: _curIdx < widget.totalCount - 1
-                      ? Colors.white : Colors.white30),
-            ),
-          ]),
-        ),
-      )
-          : null,
     );
   }
 
-  void _showJumpDialog(BuildContext context, Color primary) {
-    final ctrl = TextEditingController(text: '${_curIdx + 1}');
-    showDialog(context: context, builder: (_) => AlertDialog(
-      backgroundColor: const Color(0xFF1C1C1E),
-      title: const Text('장 번호로 이동',
-          style: TextStyle(fontSize: 16,
-              fontWeight: FontWeight.bold, color: Colors.white)),
-      content: TextField(
-        controller: ctrl,
-        keyboardType: TextInputType.number,
-        autofocus: true,
-        style: const TextStyle(color: Colors.white),
-        decoration: InputDecoration(
-          hintText: '1 ~ ${widget.totalCount}',
-          hintStyle: const TextStyle(color: Colors.white38),
-          border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10)),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide: BorderSide(color: primary, width: 2),
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      // 터치 이벤트 충돌을 막기 위해 extendBodyBehindAppBar를 끄고
+      // AppBar / body / bottomNavigationBar를 완전히 분리.
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_rounded,
+              size: 20, color: Colors.white),
+          tooltip: '뒤로',
+          onPressed: () => Navigator.of(context).maybePop(),
+        ),
+        iconTheme: const IconThemeData(color: Colors.white),
+        title: Text(
+          widget.labelBuilder(_curIdx),
+          style: const TextStyle(
+              color: Colors.white, fontWeight: FontWeight.bold),
+        ),
+        centerTitle: true,
+      ),
+      body: PageView.builder(
+        controller: _pageCtrl,
+        itemCount: widget.totalCount,
+        onPageChanged: (i) => setState(() => _curIdx = i),
+        itemBuilder: (_, index) => _HymnPageItem(
+          key: ValueKey('hymn-$index'),
+          index: index,
+          getFile: widget.getFile,
+          label: widget.labelBuilder(index),
+        ),
+      ),
+      bottomNavigationBar: SafeArea(
+        top: false,
+        child: Container(
+          color: Colors.black,
+          height: 54,
+          child: Row(
+            children: [
+              IconButton(
+                onPressed: _curIdx > 0 ? _prev : null,
+                icon: Icon(Icons.arrow_back_ios_rounded,
+                    color: _curIdx > 0 ? Colors.white : Colors.white30),
+              ),
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: _showJumpDialog,
+                  child: Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.music_note_rounded,
+                              size: 14, color: Colors.white),
+                          const SizedBox(width: 6),
+                          Text(widget.labelBuilder(_curIdx),
+                              style: const TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              IconButton(
+                onPressed: _curIdx < widget.totalCount - 1 ? _next : null,
+                icon: Icon(Icons.arrow_forward_ios_rounded,
+                    color: _curIdx < widget.totalCount - 1
+                        ? Colors.white
+                        : Colors.white30),
+              ),
+            ],
           ),
         ),
       ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context),
-            child: const Text('취소',
-                style: TextStyle(color: Colors.white54))),
-        ElevatedButton(
-          onPressed: () {
-            final n = int.tryParse(ctrl.text);
-            if (n != null && n >= 1 && n <= widget.totalCount) {
-              Navigator.pop(context);
-              _pageCtrl.jumpToPage(n - 1);
-            }
-          },
-          style: ElevatedButton.styleFrom(
-              backgroundColor: primary,
-              foregroundColor: Colors.black),
-          child: const Text('이동'),
-        ),
-      ],
-    ));
+    );
+  }
+}
+
+// 개별 찬송가 페이지 — 독립 FutureBuilder로 읽기/디코딩.
+// 캐시 없음, ResizeImage 없음, 코덱 직접 호출 없음. 최대한 표준 경로.
+class _HymnPageItem extends StatefulWidget {
+  final int index;
+  final HymnFileResolver getFile;
+  final String label;
+
+  const _HymnPageItem({
+    required Key key,
+    required this.index,
+    required this.getFile,
+    required this.label,
+  }) : super(key: key);
+
+  @override
+  State<_HymnPageItem> createState() => _HymnPageItemState();
+}
+
+class _HymnPageItemState extends State<_HymnPageItem> {
+  late Future<Uint8List?> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _load();
+  }
+
+  Future<Uint8List?> _load() async {
+    try {
+      final file = await widget.getFile(widget.index);
+      if (file == null) return null;
+      if (!await file.exists()) return null;
+      final bytes = await file.readAsBytes();
+      if (bytes.isEmpty) return null;
+      return bytes;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _retry() {
+    setState(() => _future = _load());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Uint8List?>(
+      future: _future,
+      builder: (_, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return const Center(
+              child: CircularProgressIndicator(color: Colors.white));
+        }
+        final bytes = snap.data;
+        if (bytes == null) {
+          return _buildError('이미지를 불러올 수 없어요');
+        }
+        return InteractiveViewer(
+          minScale: 0.5,
+          maxScale: 5.0,
+          child: Center(
+            child: Image.memory(
+              bytes,
+              fit: BoxFit.contain,
+              gaplessPlayback: true,
+              errorBuilder: (_, err, __) =>
+                  _buildError('디코딩 실패: $err'),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildError(String msg) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.image_not_supported_rounded,
+              size: 56, color: Colors.white54),
+          const SizedBox(height: 12),
+          Text('${widget.label} · $msg',
+              style: const TextStyle(color: Colors.white70, fontSize: 14),
+              textAlign: TextAlign.center),
+          const SizedBox(height: 12),
+          TextButton.icon(
+            onPressed: _retry,
+            icon: const Icon(Icons.refresh_rounded,
+                size: 16, color: Colors.white70),
+            label: const Text('다시 시도',
+                style: TextStyle(color: Colors.white70)),
+          ),
+        ],
+      ),
+    );
   }
 }

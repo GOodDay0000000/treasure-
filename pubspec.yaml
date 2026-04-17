@@ -47,6 +47,7 @@ dependencies:
   path: ^1.9.0
   google_fonts: ^6.2.1
   photo_view: ^0.15.0
+  url_launcher: ^6.2.6
 
 
 
@@ -149,11 +150,87 @@ flutter:
     - assets/bible/krv/revelation/
     - assets/data/hebrew_dict.json
     - assets/data/greek_dict.json
+    - assets/data/hebrew_alphabet.json
+    - assets/data/greek_alphabet.json
+    - assets/data/book_info.json
+    - assets/data/cross_references.json
+    - assets/data/topics.json
+    - assets/data/background.json
+    - assets/data/bible_stats.json
+    - assets/data/commentary/genesis/
+    - assets/data/commentary/exodus/
+    - assets/data/commentary/leviticus/
+    - assets/data/commentary/numbers/
+    - assets/data/commentary/deuteronomy/
+    - assets/data/commentary/joshua/
+    - assets/data/commentary/judges/
+    - assets/data/commentary/ruth/
+    - assets/data/commentary/1samuel/
+    - assets/data/commentary/2samuel/
+    - assets/data/commentary/1kings/
+    - assets/data/commentary/2kings/
+    - assets/data/commentary/1chronicles/
+    - assets/data/commentary/2chronicles/
+    - assets/data/commentary/ezra/
+    - assets/data/commentary/nehemiah/
+    - assets/data/commentary/esther/
+    - assets/data/commentary/job/
+    - assets/data/commentary/psalms/
+    - assets/data/commentary/proverbs/
+    - assets/data/commentary/ecclesiastes/
+    - assets/data/commentary/songofsolomon/
+    - assets/data/commentary/isaiah/
+    - assets/data/commentary/jeremiah/
+    - assets/data/commentary/lamentations/
+    - assets/data/commentary/ezekiel/
+    - assets/data/commentary/daniel/
+    - assets/data/commentary/hosea/
+    - assets/data/commentary/joel/
+    - assets/data/commentary/amos/
+    - assets/data/commentary/obadiah/
+    - assets/data/commentary/jonah/
+    - assets/data/commentary/micah/
+    - assets/data/commentary/nahum/
+    - assets/data/commentary/habakkuk/
+    - assets/data/commentary/zephaniah/
+    - assets/data/commentary/haggai/
+    - assets/data/commentary/zechariah/
+    - assets/data/commentary/malachi/
+    - assets/data/commentary/matthew/
+    - assets/data/commentary/mark/
+    - assets/data/commentary/luke/
+    - assets/data/commentary/john/
+    - assets/data/commentary/acts/
+    - assets/data/commentary/romans/
+    - assets/data/commentary/1corinthians/
+    - assets/data/commentary/2corinthians/
+    - assets/data/commentary/galatians/
+    - assets/data/commentary/ephesians/
+    - assets/data/commentary/philippians/
+    - assets/data/commentary/colossians/
+    - assets/data/commentary/1thessalonians/
+    - assets/data/commentary/2thessalonians/
+    - assets/data/commentary/1timothy/
+    - assets/data/commentary/2timothy/
+    - assets/data/commentary/titus/
+    - assets/data/commentary/philemon/
+    - assets/data/commentary/hebrews/
+    - assets/data/commentary/james/
+    - assets/data/commentary/1peter/
+    - assets/data/commentary/2peter/
+    - assets/data/commentary/1john/
+    - assets/data/commentary/2john/
+    - assets/data/commentary/3john/
+    - assets/data/commentary/jude/
+    - assets/data/commentary/revelation/
     - assets/bible/krv/
     - assets/bible/korv/
     - assets/bible/kjv/
     - assets/bible/chiun/
     - assets/bible/chisb/
+    - assets/images/bible_map.png
+    - assets/images/splash_dark.png
+    - assets/images/splash_light.png
 
 
 

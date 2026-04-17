@@ -3,22 +3,36 @@
 import 'package:flutter/material.dart';
 import '../l10n/app_strings.dart';
 import 'book_select_page.dart';
-import 'hymn_page.dart';
+import 'treasure_map_page.dart';
+import 'lab_page.dart';
 import 'activity_page.dart';
 
 class MainNavigationPage extends StatefulWidget {
   const MainNavigationPage({super.key});
 
+  /// 하위 위젯에서 탭 전환하기 위한 진입점.
+  /// 예: `MainNavigationPage.of(context)?.goToTab(1);`
+  static MainNavigationPageState? of(BuildContext context) =>
+      context.findAncestorStateOfType<MainNavigationPageState>();
+
   @override
-  State<MainNavigationPage> createState() => _MainNavigationPageState();
+  State<MainNavigationPage> createState() => MainNavigationPageState();
 }
 
-class _MainNavigationPageState extends State<MainNavigationPage> {
+class MainNavigationPageState extends State<MainNavigationPage> {
   int _currentIndex = 0;
+
+  /// 탭 전환 API. 범위를 벗어나면 무시.
+  void goToTab(int index) {
+    if (index < 0 || index >= _pages.length) return;
+    if (_currentIndex == index) return;
+    setState(() => _currentIndex = index);
+  }
 
   final List<Widget> _pages = const [
     BookSelectPage(),
-    HymnPage(),
+    TreasureMapPage(),
+    LabPage(),
     ActivityPage(),
   ];
 
@@ -62,20 +76,28 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
                   onTap: () => setState(() => _currentIndex = 0),
                 ),
                 _NavItem(
-                  icon: Icons.music_note_rounded,
-                  label: AppLocale.s.navHymn,
+                  icon: Icons.map_rounded,
+                  label: '보물지도',
                   isSelected: _currentIndex == 1,
                   activeColor: primary,
                   inactiveColor: inactive,
                   onTap: () => setState(() => _currentIndex = 1),
                 ),
                 _NavItem(
-                  icon: Icons.grid_view_rounded,
-                  label: AppLocale.s.navActivity,
+                  icon: Icons.science_rounded,
+                  label: '연구소',
                   isSelected: _currentIndex == 2,
                   activeColor: primary,
                   inactiveColor: inactive,
                   onTap: () => setState(() => _currentIndex = 2),
+                ),
+                _NavItem(
+                  icon: Icons.grid_view_rounded,
+                  label: AppLocale.s.navActivity,
+                  isSelected: _currentIndex == 3,
+                  activeColor: primary,
+                  inactiveColor: inactive,
+                  onTap: () => setState(() => _currentIndex = 3),
                 ),
               ],
             ),

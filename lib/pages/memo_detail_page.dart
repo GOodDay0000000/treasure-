@@ -17,8 +17,14 @@ import '../services/bookmark_service.dart';
 class MemoDetailPage extends StatefulWidget {
   final Memo? existingMemo;
   final VerseRef? initialVerse;
+  final List<VerseRef>? initialVerses;
 
-  const MemoDetailPage({super.key, this.existingMemo, this.initialVerse});
+  const MemoDetailPage({
+    super.key,
+    this.existingMemo,
+    this.initialVerse,
+    this.initialVerses,
+  });
 
   @override
   State<MemoDetailPage> createState() => _MemoDetailPageState();
@@ -107,7 +113,10 @@ class _MemoDetailPageState extends State<MemoDetailPage> {
     } else {
       _titleCtrl = TextEditingController();
       _quillCtrl = quill.QuillController.basic();
-      if (widget.initialVerse != null) {
+      // initialVerses(복수)가 있으면 우선, 아니면 initialVerse(단수)
+      if (widget.initialVerses != null && widget.initialVerses!.isNotEmpty) {
+        _verses.addAll(widget.initialVerses!);
+      } else if (widget.initialVerse != null) {
         _verses.add(widget.initialVerse!);
       }
     }

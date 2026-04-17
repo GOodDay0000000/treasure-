@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../main.dart';
 import '../l10n/app_strings.dart';
+import '../services/experience_service.dart';
 import 'book_select_page.dart';
 
 class MyPage extends StatefulWidget {
@@ -17,10 +18,16 @@ class _MyPageState extends State<MyPage> {
   String _currentVersion = 'krv';
   double _fontSize        = 20.0;
 
+  // 항해자 프로필
+  int _exp = 0;
+  String _nickname = '항해자';
+  VoyagerGrade _grade = VoyagerGrade.all.first;
+
   @override
   void initState() {
     super.initState();
     _loadPrefs();
+    _loadProfile();
   }
 
   Future<void> _loadPrefs() async {
@@ -29,6 +36,82 @@ class _MyPageState extends State<MyPage> {
       _currentVersion = prefs.getString('last_version') ?? 'krv';
       _fontSize       = prefs.getDouble('font_size') ?? 20.0;
     });
+  }
+
+  Future<void> _loadProfile() async {
+    final exp = await ExperienceService.getExp();
+    final nick = await ExperienceService.getNickname();
+    if (!mounted) return;
+    setState(() {
+      _exp = exp;
+      _nickname = nick;
+      _grade = VoyagerGrade.fromExp(exp);
+    });
+  }
+
+  Future<void> _editNickname() async {
+    final ctrl = TextEditingController(text: _nickname);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF1B2D3F) : Colors.white,
+        title: const Text('닉네임 수정'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLength: 16,
+          decoration: const InputDecoration(
+            hintText: '항해자 이름',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('취소')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, ctrl.text),
+              child: const Text('저장')),
+        ],
+      ),
+    );
+    if (result != null) {
+      await ExperienceService.setNickname(result);
+      await _loadProfile();
+    }
+  }
+
+  Future<void> _confirmReset() async {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF1B2D3F) : Colors.white,
+        title: const Text('⚠️ 항해 초기화'),
+        content: const Text(
+            '경험치·등급·읽은 장 기록이 모두 삭제됩니다. 북마크/형광펜/메모는 유지됩니다.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('취소')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+            child: const Text('초기화'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await ExperienceService.resetAll();
+      await _loadProfile();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('항해가 초기화됐어요'),
+        behavior: SnackBarBehavior.floating,
+      ));
+    }
   }
 
   Future<void> _saveVersion(String key) async {
@@ -270,36 +353,17 @@ class _MyPageState extends State<MyPage> {
         padding: const EdgeInsets.all(16),
         children: [
 
-          // ── 프로필 카드 ──────────────────────────────────────
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: cardBg,
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Row(
-              children: [
-                CircleAvatar(
-                  radius: 28,
-                  backgroundColor: primary.withOpacity(0.15),
-                  child: Icon(Icons.person_rounded, size: 30, color: primary),
-                ),
-                const SizedBox(width: 16),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('성경 앱',
-                        style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: text)),
-                    const SizedBox(height: 4),
-                    Text(versionName,
-                        style: TextStyle(fontSize: 13, color: sub)),
-                  ],
-                ),
-              ],
-            ),
+          // ── 항해자 프로필 카드 ────────────────────────────
+          _VoyagerCard(
+            exp: _exp,
+            grade: _grade,
+            nickname: _nickname,
+            onTapNickname: _editNickname,
+            onReset: _confirmReset,
+            isDark: isDark,
+            cardBg: cardBg,
+            text: text,
+            sub: sub,
           ),
 
           const SizedBox(height: 24),
@@ -574,6 +638,153 @@ class _Tile extends StatelessWidget {
         if (showDivider)
           Divider(height: 1, color: divColor, indent: 60),
       ],
+    );
+  }
+}
+
+// ── 항해자 카드 ───────────────────────────────────────────────
+class _VoyagerCard extends StatelessWidget {
+  final int exp;
+  final VoyagerGrade grade;
+  final String nickname;
+  final VoidCallback onTapNickname;
+  final VoidCallback onReset;
+  final bool isDark;
+  final Color cardBg;
+  final Color text;
+  final Color sub;
+
+  const _VoyagerCard({
+    required this.exp,
+    required this.grade,
+    required this.nickname,
+    required this.onTapNickname,
+    required this.onReset,
+    required this.isDark,
+    required this.cardBg,
+    required this.text,
+    required this.sub,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const gold = Color(0xFFC9A84C);
+    final nextIdx = VoyagerGrade.all.indexOf(grade) + 1;
+    final isMax = nextIdx >= VoyagerGrade.all.length;
+    final next = isMax ? null : VoyagerGrade.all[nextIdx];
+    final segExp = exp - grade.minExp;
+    final segTotal = isMax ? 1 : (next!.minExp - grade.minExp);
+    final pct = isMax ? 1.0 : (segExp / segTotal).clamp(0.0, 1.0);
+    final remain = isMax ? 0 : (next!.minExp - exp);
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 18),
+      decoration: BoxDecoration(
+        color: cardBg,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: gold.withOpacity(0.25), width: 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  color: gold.withOpacity(0.14),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: gold.withOpacity(0.35)),
+                ),
+                child: Center(
+                  child: Text(grade.emoji,
+                      style: const TextStyle(fontSize: 28)),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    GestureDetector(
+                      onTap: onTapNickname,
+                      child: Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              nickname,
+                              style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w800,
+                                color: text,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Icon(Icons.edit_rounded,
+                              size: 13, color: sub),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      '${grade.name} · $exp EXP',
+                      style: const TextStyle(
+                          fontSize: 12,
+                          color: gold,
+                          fontWeight: FontWeight.w700),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: pct,
+              minHeight: 7,
+              backgroundColor: isDark
+                  ? const Color(0xFF2C3E50)
+                  : const Color(0xFFE5E5EA),
+              valueColor: const AlwaysStoppedAnimation(gold),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Text(
+                isMax
+                    ? '최고 등급입니다 — 방주에 도달했어요'
+                    : '다음 등급 ${next!.emoji} ${next.name}까지 $remain EXP',
+                style: TextStyle(fontSize: 11, color: sub),
+              ),
+              const Spacer(),
+              GestureDetector(
+                onTap: onReset,
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Row(
+                    children: [
+                      Icon(Icons.refresh_rounded,
+                          size: 12, color: sub),
+                      const SizedBox(width: 2),
+                      Text('항해 초기화',
+                          style: TextStyle(
+                              fontSize: 10, color: sub)),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

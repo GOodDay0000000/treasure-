@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../models/bookmark.dart';
 import '../models/verse_ref.dart';
+import 'experience_service.dart';
 
 class BookmarkService {
   static const _boxName = 'bible_bookmarks_v1';
@@ -60,6 +61,8 @@ class BookmarkService {
       createdAt: DateTime.now(),
     );
     await _box.put(bm.id, json.encode(bm.toJson()));
+    // 경험치 지급 (+2). 마이그레이션 시에도 호출되지만 큰 문제 아님.
+    await ExperienceService.addExp(ExperienceService.expPerBookmark);
     return bm;
   }
 
